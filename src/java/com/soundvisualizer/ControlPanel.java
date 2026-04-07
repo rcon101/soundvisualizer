@@ -109,6 +109,18 @@ public class ControlPanel extends JPanel {
     private JPanel audioTab, vizTab, analysisTab, freqTab, displayTab;
 
     // -----------------------------------------------------------------------
+    // Profile panel controls
+    // -----------------------------------------------------------------------
+    private JPanel            profilePanel;
+    private JTextField        profileNameField;
+    private JComboBox<String> profileCombo;
+    private JButton           btnSaveProfile;
+    private JButton           btnLoadProfile;
+    private JButton           btnDeleteProfile;
+    /** When true, {@link #fireSettingsChange()} is suppressed (used during profile load). */
+    private boolean           suppressSettingsChange;
+
+    // -----------------------------------------------------------------------
     // Callbacks
     // -----------------------------------------------------------------------
     private Runnable              onStart;
@@ -271,11 +283,18 @@ public class ControlPanel extends JPanel {
 
         add(tabs, BorderLayout.CENTER);
 
-        // Status bar at bottom
+        // Profile panel + status bar stacked at bottom
+        profilePanel = buildProfilePanel();
         JPanel statusBar = new JPanel(new BorderLayout());
+        statusBar.setOpaque(false);
         statusBar.setBorder(new MatteBorder(1, 0, 0, 0, initialTheme.border));
         statusBar.add(statusLabel, BorderLayout.WEST);
-        add(statusBar, BorderLayout.SOUTH);
+        JPanel southSection = new JPanel();
+        southSection.setLayout(new BoxLayout(southSection, BoxLayout.Y_AXIS));
+        southSection.setOpaque(false);
+        southSection.add(profilePanel);
+        southSection.add(statusBar);
+        add(southSection, BorderLayout.SOUTH);
 
         // Wire change events to onSettingsChange
         wireTriggers();
@@ -399,6 +418,69 @@ public class ControlPanel extends JPanel {
         return p;
     }
 
+    private JPanel buildProfilePanel() {
+        JPanel p = new JPanel();
+        p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
+        p.setBorder(BorderFactory.createCompoundBorder(
+                new MatteBorder(1, 0, 0, 0, currentTheme.border),
+                new EmptyBorder(6, 8, 6, 8)));
+
+        JLabel header = new JLabel("Profiles");
+        header.setFont(HDR_FONT);
+        header.setForeground(currentTheme.textAccent);
+        header.setAlignmentX(Component.LEFT_ALIGNMENT);
+        p.add(header);
+        p.add(Box.createVerticalStrut(4));
+
+        // Row 1 – name field + Save button
+        profileNameField = new JTextField("default");
+        profileNameField.setFont(LBL_FONT);
+        btnSaveProfile = makeButton("Save", currentTheme.btnNeutral, currentTheme.btnForeground);
+        btnSaveProfile.setFont(LBL_FONT.deriveFont(Font.BOLD));
+        btnSaveProfile.setPreferredSize(new Dimension(52, 22));
+
+        JPanel saveRow = new JPanel(new BorderLayout(4, 0));
+        saveRow.setOpaque(false);
+        saveRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 26));
+        saveRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JLabel nameLbl = new JLabel("Name:");
+        nameLbl.setFont(LBL_FONT);
+        nameLbl.setForeground(currentTheme.textPrimary);
+        nameLbl.setPreferredSize(new Dimension(44, 22));
+        saveRow.add(nameLbl, BorderLayout.WEST);
+        saveRow.add(profileNameField, BorderLayout.CENTER);
+        saveRow.add(btnSaveProfile, BorderLayout.EAST);
+        p.add(saveRow);
+        p.add(Box.createVerticalStrut(4));
+
+        // Row 2 – profile combo + Load + Delete buttons
+        profileCombo = new JComboBox<>();
+        profileCombo.setFont(LBL_FONT);
+        refreshProfileList();
+        btnLoadProfile = makeButton("Load", currentTheme.btnPrimary, currentTheme.btnForeground);
+        btnLoadProfile.setFont(LBL_FONT.deriveFont(Font.BOLD));
+        btnLoadProfile.setPreferredSize(new Dimension(52, 22));
+        btnDeleteProfile = makeButton("Del", currentTheme.btnDanger, currentTheme.btnForeground);
+        btnDeleteProfile.setFont(LBL_FONT.deriveFont(Font.BOLD));
+        btnDeleteProfile.setPreferredSize(new Dimension(44, 22));
+
+        JPanel loadBtns = new JPanel(new GridLayout(1, 2, 4, 0));
+        loadBtns.setOpaque(false);
+        loadBtns.setPreferredSize(new Dimension(100, 22));
+        loadBtns.add(btnLoadProfile);
+        loadBtns.add(btnDeleteProfile);
+
+        JPanel loadRow = new JPanel(new BorderLayout(4, 0));
+        loadRow.setOpaque(false);
+        loadRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 26));
+        loadRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        loadRow.add(profileCombo, BorderLayout.CENTER);
+        loadRow.add(loadBtns, BorderLayout.EAST);
+        p.add(loadRow);
+
+        return p;
+    }
+
     // -----------------------------------------------------------------------
     // Event wiring
     // -----------------------------------------------------------------------
@@ -408,6 +490,9 @@ public class ControlPanel extends JPanel {
         btnStop  .addActionListener(e -> { if (onStop  != null) onStop .run(); });
         btnTone  .addActionListener(e -> toggleReferenceTone());
         btnBrowse.addActionListener(e -> browseForAudioFile());
+        btnSaveProfile  .addActionListener(e -> saveProfileAction());
+        btnLoadProfile  .addActionListener(e -> loadProfileAction());
+        btnDeleteProfile.addActionListener(e -> deleteProfileAction());
 
         themeCombo.addActionListener(e -> {
             Theme t = (Theme) themeCombo.getSelectedItem();
@@ -430,7 +515,7 @@ public class ControlPanel extends JPanel {
     }
 
     private void fireSettingsChange() {
-        if (onSettingsChange != null) onSettingsChange.run();
+        if (!suppressSettingsChange && onSettingsChange != null) onSettingsChange.run();
     }
 
     // -----------------------------------------------------------------------
@@ -442,6 +527,195 @@ public class ControlPanel extends JPanel {
     public void onStop(Runnable r)            { onStop = r; }
     public void onThemeChange(Consumer<Theme> c) { onThemeChange = c; }
     public void onSettingsChange(Runnable r)  { onSettingsChange = r; }
+
+    // -----------------------------------------------------------------------
+    // Profile actions
+    // -----------------------------------------------------------------------
+
+    private void saveProfileAction() {
+        String name = profileNameField.getText().trim();
+        if (name.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "Enter a profile name before saving.",
+                "Save Profile", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        try {
+            ProfileManager.save(name, getProfile());
+            refreshProfileList();
+            profileCombo.setSelectedItem(name);
+        } catch (java.io.IOException ex) {
+            JOptionPane.showMessageDialog(this,
+                "Could not save profile:\n" + ex.getMessage(),
+                "Save Profile", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void loadProfileAction() {
+        String name = (String) profileCombo.getSelectedItem();
+        if (name == null || name.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "Select a profile from the list to load.",
+                "Load Profile", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        try {
+            VisualizerProfile profile = ProfileManager.load(name);
+            applyProfile(profile);
+            profileNameField.setText(name);
+        } catch (java.io.IOException | IllegalArgumentException ex) {
+            JOptionPane.showMessageDialog(this,
+                "Could not load profile:\n" + ex.getMessage(),
+                "Load Profile", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void deleteProfileAction() {
+        String name = (String) profileCombo.getSelectedItem();
+        if (name == null || name.isEmpty()) return;
+        int confirm = JOptionPane.showConfirmDialog(this,
+            "Delete profile \"" + name + "\"?",
+            "Delete Profile", JOptionPane.YES_NO_OPTION);
+        if (confirm != JOptionPane.YES_OPTION) return;
+        try {
+            ProfileManager.delete(name);
+            refreshProfileList();
+        } catch (java.io.IOException ex) {
+            JOptionPane.showMessageDialog(this,
+                "Could not delete profile:\n" + ex.getMessage(),
+                "Delete Profile", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void refreshProfileList() {
+        if (profileCombo == null) return;
+        String current = (String) profileCombo.getSelectedItem();
+        profileCombo.removeAllItems();
+        for (String name : ProfileManager.listProfiles()) profileCombo.addItem(name);
+        if (current != null) profileCombo.setSelectedItem(current);
+    }
+
+    // -----------------------------------------------------------------------
+    // Profile snapshot / restore
+    // -----------------------------------------------------------------------
+
+    /** Captures the current state of all controls into a new {@link VisualizerProfile}. */
+    public VisualizerProfile getProfile() {
+        VisualizerProfile p = new VisualizerProfile();
+        // Audio
+        Object src = sourceCombo.getSelectedItem();
+        p.sourceName   = src != null ? src.toString() : "System Default";
+        p.audioFilePath = selectedAudioFile != null ? selectedAudioFile.getAbsolutePath() : null;
+        p.gain         = gainSlider.getValue();
+        AudioProcessor.StereoMode sm = (AudioProcessor.StereoMode) stereoModeCombo.getSelectedItem();
+        p.stereoMode   = sm != null ? sm.name() : "MERGED";
+        Object bs = bufferSizeCombo.getSelectedItem();
+        p.bufferSize   = bs != null ? (Integer) bs : 2048;
+        // Visualize
+        VisualizationMode vm = (VisualizationMode) modeCombo.getSelectedItem();
+        p.visualizationMode = vm != null ? vm.name() : "SPECTRUM";
+        BarStyle bst = (BarStyle) barStyleCombo.getSelectedItem();
+        p.barStyle     = bst != null ? bst.name() : "GRADIENT";
+        ColorMode cm = (ColorMode) colorModeCombo.getSelectedItem();
+        p.colorMode    = cm != null ? cm.name() : "FREQUENCY";
+        p.mirror       = mirrorCheck.isSelected();
+        p.barCount     = barCountSlider.getValue();
+        // Analysis
+        Object fs = fftSizeCombo.getSelectedItem();
+        p.fftSize      = fs != null ? (Integer) fs : 2048;
+        WindowFunction wf = (WindowFunction) windowCombo.getSelectedItem();
+        p.windowFunction = wf != null ? wf.name() : "HANN";
+        p.smoothing    = smoothingSlider.getValue();
+        p.peakHold     = peakHoldCheck.isSelected();
+        p.peakDecay    = peakDecaySlider.getValue();
+        p.noiseFloor   = noiseFloorSlider.getValue();
+        // Frequency
+        p.freqMin      = freqMinSlider.getValue();
+        p.freqMax      = freqMaxSlider.getValue();
+        p.logScale     = logScaleCheck.isSelected();
+        // Display
+        Theme t = (Theme) themeCombo.getSelectedItem();
+        p.themeName       = t != null ? t.name : "Dark";
+        p.showGrid        = showGridCheck.isSelected();
+        p.showFreqLabels  = showFreqLabelsCheck.isSelected();
+        p.showDbScale     = showDbScaleCheck.isSelected();
+        p.showPeakLine    = showPeakLineCheck.isSelected();
+        return p;
+    }
+
+    /**
+     * Applies all values from {@code profile} to the UI controls, then fires a
+     * single settings-change event.  Theme changes propagate via the existing
+     * {@code themeCombo} action listener.
+     */
+    public void applyProfile(VisualizerProfile profile) {
+        suppressSettingsChange = true;
+        try {
+            // Audio
+            selectSourceByLabel(profile.sourceName);
+            if (profile.audioFilePath != null) {
+                File f = new File(profile.audioFilePath);
+                if (f.exists()) {
+                    selectedAudioFile = f;
+                    fileNameLbl.setText(f.getName());
+                    fileNameLbl.setToolTipText(f.getAbsolutePath());
+                }
+            }
+            gainSlider.setValue(profile.gain);
+            setComboByEnumName(stereoModeCombo, AudioProcessor.StereoMode.class, profile.stereoMode);
+            bufferSizeCombo.setSelectedItem(profile.bufferSize);
+            // Visualize
+            setComboByEnumName(modeCombo,      VisualizationMode.class, profile.visualizationMode);
+            setComboByEnumName(barStyleCombo,  BarStyle.class,          profile.barStyle);
+            setComboByEnumName(colorModeCombo, ColorMode.class,         profile.colorMode);
+            mirrorCheck.setSelected(profile.mirror);
+            barCountSlider.setValue(profile.barCount);
+            // Analysis
+            fftSizeCombo.setSelectedItem(profile.fftSize);
+            setComboByEnumName(windowCombo, WindowFunction.class, profile.windowFunction);
+            smoothingSlider.setValue(profile.smoothing);
+            peakHoldCheck.setSelected(profile.peakHold);
+            peakDecaySlider.setValue(profile.peakDecay);
+            noiseFloorSlider.setValue(profile.noiseFloor);
+            // Frequency
+            freqMinSlider.setValue(profile.freqMin);
+            freqMaxSlider.setValue(profile.freqMax);
+            logScaleCheck.setSelected(profile.logScale);
+            // Display – theme combo fires onThemeChange directly
+            Theme t = Themes.byName(profile.themeName);
+            themeCombo.setSelectedItem(t);
+            showGridCheck.setSelected(profile.showGrid);
+            showFreqLabelsCheck.setSelected(profile.showFreqLabels);
+            showDbScaleCheck.setSelected(profile.showDbScale);
+            showPeakLineCheck.setSelected(profile.showPeakLine);
+        } finally {
+            suppressSettingsChange = false;
+        }
+        fireSettingsChange();
+    }
+
+    /** Selects the {@code sourceCombo} entry whose text matches {@code label}, falling back to index 0. */
+    private void selectSourceByLabel(String label) {
+        if (label == null) { sourceCombo.setSelectedIndex(0); return; }
+        for (int i = 0; i < sourceCombo.getItemCount(); i++) {
+            if (label.equals(sourceCombo.getItemAt(i))) {
+                sourceCombo.setSelectedIndex(i);
+                return;
+            }
+        }
+        sourceCombo.setSelectedIndex(0);
+    }
+
+    /** Selects the enum constant whose {@link Enum#name()} matches {@code name}. */
+    private static <E extends Enum<E>> void setComboByEnumName(
+            JComboBox<E> combo, Class<E> cls, String name) {
+        if (name == null) return;
+        try {
+            combo.setSelectedItem(Enum.valueOf(cls, name));
+        } catch (IllegalArgumentException ignored) {
+            // unknown value – keep current selection
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Audio file browsing
@@ -641,9 +915,11 @@ public class ControlPanel extends JPanel {
         applyTabTheme(analysisTab, t);
         applyTabTheme(freqTab, t);
         applyTabTheme(displayTab, t);
+        applyTabTheme(profilePanel, t);
 
         for (JComboBox<?> cb : new JComboBox[]{sourceCombo, stereoModeCombo, bufferSizeCombo,
-                modeCombo, barStyleCombo, colorModeCombo, fftSizeCombo, windowCombo, themeCombo}) {
+                modeCombo, barStyleCombo, colorModeCombo, fftSizeCombo, windowCombo, themeCombo,
+                profileCombo}) {
             styleCombo(cb, t);
         }
 
@@ -652,10 +928,18 @@ public class ControlPanel extends JPanel {
             styleSlider(sl, t);
         }
 
-        styleButton(btnStart,  t.btnPrimary, t.btnForeground);
-        styleButton(btnStop,   t.btnDanger,  t.btnForeground);
-        styleButton(btnTone,   t.btnNeutral, t.btnForeground);
-        styleButton(btnBrowse, t.btnNeutral, t.btnForeground);
+        styleButton(btnStart,        t.btnPrimary, t.btnForeground);
+        styleButton(btnStop,         t.btnDanger,  t.btnForeground);
+        styleButton(btnTone,         t.btnNeutral, t.btnForeground);
+        styleButton(btnBrowse,       t.btnNeutral, t.btnForeground);
+        styleButton(btnSaveProfile,  t.btnNeutral, t.btnForeground);
+        styleButton(btnLoadProfile,  t.btnPrimary, t.btnForeground);
+        styleButton(btnDeleteProfile, t.btnDanger,  t.btnForeground);
+
+        profileNameField.setBackground(t.sectionBackground);
+        profileNameField.setForeground(t.textPrimary);
+        profileNameField.setCaretColor(t.textPrimary);
+        profileNameField.setBorder(BorderFactory.createLineBorder(t.border));
 
         statusLabel.setForeground(t.textSecondary);
         statusLabel.setBackground(t.panelBackground);

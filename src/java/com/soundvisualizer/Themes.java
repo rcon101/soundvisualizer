@@ -200,5 +200,14 @@ public final class Themes {
     /** Default theme applied on startup. */
     public static final Theme DEFAULT = DARK;
 
+    /** Returns the theme whose {@link Theme#name} equals {@code name}, or {@link #DEFAULT}. */
+    public static Theme byName(String name) {
+        if (name == null) return DEFAULT;
+        for (Theme t : ALL) {
+            if (t.name.equals(name)) return t;
+        }
+        return DEFAULT;
+    }
+
     private Themes() {}
 }
